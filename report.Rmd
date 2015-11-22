@@ -236,43 +236,15 @@ sumdf$city <- as.factor(sumdf$city)
 group <- cut( sumdf$checkin_all, 
               breaks = quantile( sumdf[sumdf$checkin_all != 0,]$checkin_all, probs = c(0, 0.25, 0.50, 0.75, 1.0)),
               include.lowest = TRUE )
-#summary(group[which(sumdf$checkin_all == 0)]) -- all NAs
 group <- factor(group, levels=c(levels(group),'0'))
 group[ is.na(group) ] <- 0
 group <- relevel(group, ref = "0")
 sumdf$checkin.group <- group
 sumdf$round_stars <- as.factor(round(sumdf$stars/0.5)*0.5)
-#
 set.seed(1234)
 inTraining <- createDataPartition( sumdf$review_count, p=0.6, list = FALSE)
 training.set <- sumdf[ inTraining, -c(1,18)]
 testing.set <- sumdf[ -inTraining, -c(1,18)]
-#Totalvalidation.set <- sumdf[ -inTraining, -c(1,18)]
-#inValidation <- createDataPartition( Totalvalidation.set$review_count, p=0.5, list = FALSE)
-#validation.set <- Totalvalidation.set[ inValidation, ]
-#testing.set <- Totalvalidation.set[ -inValidation, ]
-#
-training.data <- training.set[,-16]
-training.data$business_category <- as.numeric(training.data$business_category)
-training.data$WiFi <- as.numeric(training.data$WiFi)
-training.data$ByAppointmentOnly <- as.numeric(training.data$ByAppointmentOnly)
-training.data$HappyHour <- as.numeric(training.data$HappyHour)
-training.data$WheelchairAccessible <- as.numeric(training.data$WheelchairAccessible)
-training.data$open <- as.numeric(training.data$open)
-training.data$open.Saturday <- as.numeric(training.data$open.Saturday)
-training.data$open.Sunday <- as.numeric(training.data$open.Sunday)
-training.data$city <- as.numeric(training.data$city)
-corelation <- cor(training.data)
-testing.data <- testing.set[,-16]
-testing.data$business_category <- as.numeric(testing.data$business_category)
-testing.data$WiFi <- as.numeric(testing.data$WiFi)
-testing.data$ByAppointmentOnly <- as.numeric(testing.data$ByAppointmentOnly)
-testing.data$HappyHour <- as.numeric(testing.data$HappyHour)
-testing.data$WheelchairAccessible <- as.numeric(testing.data$WheelchairAccessible)
-testing.data$open <- as.numeric(testing.data$open)
-testing.data$open.Saturday <- as.numeric(testing.data$open.Saturday)
-testing.data$open.Sunday <- as.numeric(testing.data$open.Sunday)
-testing.data$city <- as.numeric(testing.data$city)
 ```
 We check the number of reviews (review_count) and average stars (stars) of businesses
 by comparing the data from the review and tips Yelp datasets with the data from the 
@@ -487,7 +459,6 @@ summary(error_test)
 ```
 ```{r, echo=FALSE, comment=NA, out.width='8cm', out.height='25cm', fig.show='hold', warning=FALSE}
 summary(testerrorlm)
-#summary(percerrortestlm)
 datalm <- data.frame( x = testing.set$checkin_all, y = predtestlm)
 dftest <- data.frame( error = testerrorlm, group = testing.set$checkin.group )
 ggplot(data=testing.set, aes(x=testing.set$checkin_all, y=testing.set$review_count)) + 
