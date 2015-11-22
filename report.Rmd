@@ -1,0 +1,610 @@
+---
+title: 'An Exploratory Study: Yelp Review vs. Checkin'
+author: "L.P."
+date: "11/21/2015"
+output: pdf_document
+---
+
+# 1. Title    
+**An Exploratory Study: A Connection Between the Yelp Number of Reviews and Checkin Feature.** 
+We study relation between number of reviews and number of checkins 
+for businesses in the Yelp dataset. 
+We find that there is a positive correlation between these two features,
+and we model the dependence using a linear regression.
+We observe an increasing variation in the number of reviews as the number
+of checkins increases.
+We explain this variation by a model coupling between the number of checkins and other features 
+in the dataset, including
+WiFi, WheelchairAccessible, business weekend opening hours, or star rating.
+We also observe a correlation between the average star rating
+and average length of the review text, as well as business weekend opening hours. 
+We predict number of reviews for a testing dataset. Our linear model prediction algorithm
+explains 75% of the data.
+
+# 2. Introduction   
+
+Is there a way how a business can get more Yelp reviews? 
+What has an effect on the number of reviews and/or star rating: 
+business opening weekday/weekend hours, number of checkins,
+day of the week: do users write more reviews on the weekends? City? 
+Does a particular type of a business differ from the rest of the businesses? 
+For example, is healthcare rating in any way different than the rest of the business ratings?  
+
+The goal for studying this question is to attract more users to use Yelp review tool
+and to help reviewed businesses better understand their own ratings.
+We focus on the following two aspects: 
+how does a business (i) increase the number of its reviews and (ii) control its star rating?
+In order to tackle these questions, we look at the business, checkin and review Yelp datasets.
+In particular, we look at the following features:
+(i) Is the business open on Saturday and/or Sunday,
+(ii) What city is the business located at,
+(iii) What category does the business fall into,
+(iv) Does the business have attributes such as: WiFi, ByAppointmentOnly, HappyHour, WheelchairAcessible,
+(v) What is the business's checkin on Monday - Sunday and/or the total number of checkins,
+(vi) What is the average star rating of the business,
+(vii) At what date/day has the business been reviewed,
+(viii) What is the text of the review, e.g., characterized by its text length.
+
+
+# 3. Methods and Data   
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(caret)
+library(rpart)
+library(grid)
+library(knitr)
+```
+```{r, echo=FALSE, cache=TRUE, cache.comments=FALSE, results='hide', message=FALSE, warning=FALSE}
+business <- stream_in(file("../yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_business.json"))
+checkin <- stream_in(file("../yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_checkin.json"))
+review <- stream_in(file("../yelp_dataset_challenge_academic_dataset/yelp_academic_dataset_review.json"))
+```
+
+```{r, echo=FALSE}
+business$open.Saturday <- !is.na( business$hours$Saturday$open )
+business$open.Sunday <- !is.na( business$hours$Sunday$open )
+```
+```{r, echo=FALSE, results='hide'}
+Las_Vegas <- c( -115.135029, 36.175773 )
+Phoenix <- c( -112.068774, 33.433361 )
+Madison <- c( -89.392346, 43.076195 )
+Urbana <- c( -88.208754, 40.109544 )
+Charlotte <- c( -80.839428, 35.224847 )
+Pittsburgh <- c( -79.997396, 40.438570 )
+Waterloo <- c( -80.522598, 43.463234 )
+Montreal <- c( -73.568845, 45.500323 )
+Edinburgh <- c( -3.186758, 55.951749 )
+Karlsruhe <- c( 8.402194, 49.006092)
+start <- rbind( Las_Vegas, Phoenix, Madison, Urbana, Charlotte, Pittsburgh, Waterloo, Montreal, Edinburgh, Karlsruhe )
+kmeansObj <- kmeans( data.frame( business$longitude, business$latitude ), start )
+business$city10 <- as.factor( kmeansObj$cluster )
+#plot( business$longitude, business$latitude, col = kmeansObj$cluster, pch = 19, cex = 1  )
+rm( kmeansObj )
+rm( start )
+```
+```{r categories, echo=FALSE, cache=TRUE}
+categories <- sort(unique(unlist( business$categories )))
+main_categories <- c(
+        "Active Life",
+        "Arts & Entertainment",
+        "Automotive",
+        "Beauty & Spas",
+        "Bicycles",
+        "Education",
+        "Event Planning & Services",
+        "Financial Services",
+        "Food",
+        "Health & Medical",
+        "Home Services",
+        "Hotels & Travel",
+        "Local Flavor",
+        "Local Services",
+        "Mass Media",
+        "Nightlife",
+        "Pets",
+        "Professional Services",
+        "Public Services & Government",
+        "Real Estate",
+        "Religious Organizations",
+        "Restaurants",
+        "Shopping"        
+        )
+business$business_category <- 
+        sapply( business$categories, function(x) {
+                for (i in 1:23){ 
+                        v <- grepl( main_categories[i], x);
+                        if( sum(v) > 0 ) return(main_categories[i])
+                        }
+                return(NA)
+        })
+business[ is.na(business$business_category), ]$business_category <- "Not Provided"
+business$business_category <- as.factor(business$business_category)
+```
+```{r, echo=FALSE}
+business$WiFi <- business$attributes[[20]]
+business[ is.na(business$WiFi), ]$WiFi <- "Not Provided"
+business$WiFi <- as.factor(business$WiFi)
+
+business$ByAppointmentOnly <- business$attributes[[1]]
+business[ is.na(business$ByAppointmentOnly), ]$ByAppointmentOnly <- "Not Provided"
+business$ByAppointmentOnly <- as.factor(business$ByAppointmentOnly)
+
+business$HappyHour <- business$attributes[[2]]
+business[ is.na(business$HappyHour), ]$HappyHour <- "Not Provided"
+business$HappyHour <- as.factor(business$HappyHour)
+
+business$WheelchairAccessible <- business$attributes[[26]]
+business[ is.na(business$WheelchairAccessible), ]$WheelchairAccessible <- "Not Provided"
+business$WheelchairAccessible <- as.factor(business$WheelchairAccessible)
+```
+```{r, message=FALSE ,echo=FALSE}
+mycheckin <- tbl_df( flatten( checkin, recursive = TRUE) )
+checkincount <- tbl_df( data.frame( "business_id" = mycheckin$business_id ) )
+checkincount$business_id <- as.character( checkincount$business_id )
+for (i in 0:6){
+        expr <- paste("-",i,sep="")
+        day <- mycheckin %>% select( ends_with(expr) )
+        checkincount[[as.character(i)]] <- rowSums( day, na.rm = TRUE )
+}
+checkincount$sum <- rowSums( checkincount[,-1], na.rm = TRUE )
+names(checkincount) <- c("business_id", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "all" )
+mybusdf <- tbl_df( select( business, business_id, stars, review_count, city10, latitude, 
+                           longitude, open, open.Saturday, open.Sunday, business_category, 
+                           WiFi, ByAppointmentOnly, HappyHour, WheelchairAccessible ) )
+mybusdf <- left_join( mybusdf, checkincount, by = "business_id" )
+mybusdf$Sunday[ is.na(mybusdf$Sunday) ] <- 0
+mybusdf$Monday[ is.na(mybusdf$Monday) ] <- 0
+mybusdf$Tuesday[ is.na(mybusdf$Tuesday) ] <- 0
+mybusdf$Wednesday[ is.na(mybusdf$Wednesday) ] <- 0
+mybusdf$Thursday[ is.na(mybusdf$Thursday) ] <- 0
+mybusdf$Friday[ is.na(mybusdf$Friday) ] <- 0
+mybusdf$Saturday[ is.na(mybusdf$Saturday) ] <- 0
+mybusdf$all[ is.na(mybusdf$all) ] <- 0
+rm( i )
+rm( expr )
+rm( day )
+rm( checkincount )
+rm( mycheckin )
+```
+We upload Yelp datasets into *business*, *checkin* and *review* data frames using *jsonlite* package. We add:   
+1. **Open on the Weekends?**  *open.Saturday*/*open.Sunday* are factor variables; TRUE if open on Sat/Sun.   
+2. **Location - City?**  *city10* is a factor variable; its value is one of the 10 cities.
+We use a *kmeans* algorithm with 10 clusters corresponding to (longitude, latitude) of:
+Las Vegas, Phoenix, Madison, Urbana, Charlotte, Pittsburgh, Waterloo, Montreal, Edinburgh and Karlsruhe.
+The algorithm predicts city for each business.   
+3. **Business Category?**  *business_category* is a factor variable; its value is one of the 23 main categories listed here:
+*https://www.yelp.com/developers/documentation/v2/all_category_list*   
+4. **Relevant Attributes?**  *WiFi*, *ByAppointmentOnly*, *HappyHour* and *WheelchairAccessible* are factor variables
+with values: (no, free, paid) for WiFi, (TRUE, FALSE) for the rest; "Not Provided" stands for NA.   
+5. **Checkin for Monday - Sunday**  We count number of checkins for Monday through Sunday
+and the total number of checkins for each business. NA counts as $0$. 
+We join the business and checkin data frames.   
+6. **Day** Represents the day of the week a review has been written.    
+7. **Text.length** Represents the (average) length of the review text (per business).
+```{r review, echo=FALSE, cache=TRUE}
+review$date <- as.Date( review$date )
+review$day <- as.factor( weekdays( review$date ) )
+review$text.length <- nchar( review$text )
+myrevdf <- tbl_df( select( review, business_id, user_id, stars, date, day, text.length ) )
+```
+```{r sum, echo=FALSE, cache=TRUE}
+mydf <- left_join( myrevdf, mybusdf[-c(2:3)], by="business_id" )
+mydf <- mydf %>% gather( checkin_day, checkin_count, Sunday : Saturday, na.rm = TRUE )
+mydf <- mydf %>% filter( day == checkin_day )
+sumdaydf <- mydf %>% group_by( business_id, day ) %>% 
+        summarise( stars = mean(stars, na.rm = TRUE), 
+                   review_count = n(), 
+                   checkin_day = mean( checkin_count, na.rm = TRUE),
+                   checkin_all = mean(all, na.rm = TRUE), 
+                   business_category = business_category[1],
+                   WiFi = WiFi[1],
+                   ByAppointmentOnly = ByAppointmentOnly[1],
+                   HappyHour = HappyHour[1],
+                   WheelchairAccessible = WheelchairAccessible[1],
+                   city = mean(city10),
+                   latitude = mean(latitude),
+                   longitude = mean(longitude),
+                   open = as.logical(mean(open)),
+                   open.Saturday = as.logical(mean(open.Saturday)),
+                   open.Sunday = as.logical(mean(open.Sunday)),
+                   text.length = mean(text.length)
+                   )
+sumdf <- mydf %>% group_by( business_id ) %>% 
+        summarise( stars = mean(stars, na.rm = TRUE), 
+                   review_count = n(), 
+                   checkin_all = mean(all, na.rm = TRUE), 
+                   business_category = business_category[1],
+                   WiFi = WiFi[1],
+                   ByAppointmentOnly = ByAppointmentOnly[1],
+                   HappyHour = HappyHour[1],
+                   WheelchairAccessible = WheelchairAccessible[1],
+                   city = mean(city10),
+                   latitude = mean(latitude),
+                   longitude = mean(longitude),
+                   open = as.logical(mean(open)),
+                   open.Saturday = as.logical(mean(open.Saturday)),
+                   open.Sunday = as.logical(mean(open.Sunday)),
+                   text.length = mean(text.length)
+        )
+sumdf$open <- as.factor(sumdf$open)
+sumdf$open.Saturday <- as.factor(sumdf$open.Saturday)
+sumdf$open.Sunday <- as.factor(sumdf$open.Sunday)
+sumdf$city <- as.factor(sumdf$city)
+group <- cut( sumdf$checkin_all, 
+              breaks = quantile( sumdf[sumdf$checkin_all != 0,]$checkin_all, probs = c(0, 0.25, 0.50, 0.75, 1.0)),
+              include.lowest = TRUE )
+#summary(group[which(sumdf$checkin_all == 0)]) -- all NAs
+group <- factor(group, levels=c(levels(group),'0'))
+group[ is.na(group) ] <- 0
+group <- relevel(group, ref = "0")
+sumdf$checkin.group <- group
+sumdf$round_stars <- as.factor(round(sumdf$stars/0.5)*0.5)
+#
+set.seed(1234)
+inTraining <- createDataPartition( sumdf$review_count, p=0.6, list = FALSE)
+training.set <- sumdf[ inTraining, -c(1,18)]
+testing.set <- sumdf[ -inTraining, -c(1,18)]
+#Totalvalidation.set <- sumdf[ -inTraining, -c(1,18)]
+#inValidation <- createDataPartition( Totalvalidation.set$review_count, p=0.5, list = FALSE)
+#validation.set <- Totalvalidation.set[ inValidation, ]
+#testing.set <- Totalvalidation.set[ -inValidation, ]
+#
+training.data <- training.set[,-16]
+training.data$business_category <- as.numeric(training.data$business_category)
+training.data$WiFi <- as.numeric(training.data$WiFi)
+training.data$ByAppointmentOnly <- as.numeric(training.data$ByAppointmentOnly)
+training.data$HappyHour <- as.numeric(training.data$HappyHour)
+training.data$WheelchairAccessible <- as.numeric(training.data$WheelchairAccessible)
+training.data$open <- as.numeric(training.data$open)
+training.data$open.Saturday <- as.numeric(training.data$open.Saturday)
+training.data$open.Sunday <- as.numeric(training.data$open.Sunday)
+training.data$city <- as.numeric(training.data$city)
+corelation <- cor(training.data)
+testing.data <- testing.set[,-16]
+testing.data$business_category <- as.numeric(testing.data$business_category)
+testing.data$WiFi <- as.numeric(testing.data$WiFi)
+testing.data$ByAppointmentOnly <- as.numeric(testing.data$ByAppointmentOnly)
+testing.data$HappyHour <- as.numeric(testing.data$HappyHour)
+testing.data$WheelchairAccessible <- as.numeric(testing.data$WheelchairAccessible)
+testing.data$open <- as.numeric(testing.data$open)
+testing.data$open.Saturday <- as.numeric(testing.data$open.Saturday)
+testing.data$open.Sunday <- as.numeric(testing.data$open.Sunday)
+testing.data$city <- as.numeric(testing.data$city)
+```
+We check the number of reviews (review_count) and average stars (stars) of businesses
+by comparing the data from the review and tips Yelp datasets with the data from the 
+business Yelp dataset. Although close, we find the results do not match. 
+We choose the review dataset as the source of the business star rating and review counts.
+We join the review and business (plus checkin) datasets.
+Features of the final dataset are: `r names(sumdf[,-c(17,18)])`.
+
+**Methods**    
+- We use the *base::cut* function to cut a vector variable into $n$ intervals determined by the variable's quantiles:
+*text.interval <- cut(sumdf$text.length, breaks=quantile(sumdf$text.length, probs=seq(0,1,0.125)))*      
+- We use the *stats::cor* function for computing the correlation of $x$ and $y$ variables: *cor(x, y)*   
+- We use the *stats::lm* function for fitting a linear model of reviews vs checkins: *lmfit <- lm( review ~ checkin)*    
+- We use the *base::summary(lmfit)*, *base::plot(lmfit)* and *caret::varImp(lmfit)* functions to summarize the results of a fitting function (including statistics, p-values), to plot the results of the fitted lm
+(including plots of residuals and normal Q-Q plots) and to calculate variable importance for the model.      
+- We use the *stats::t.test* function to perform two sample t-test and to obtain the test *p-value*:    
+*t.test( weekendyes, weekendno, paired=FALSE, var.equal=FALSE, alternative="greater")*   
+- We use the *stats::predict* functions to predict values for the test set.    
+- We use the *caret::createDataPartition* for a series of test/train partitions and test/train sets:
+*inTrain <- createDataPartition( review, p=0.6, list = FALSE)*; *train.set <- data[ inTrain, ]*, *test.set <- data[ -inTrain, ]*  
+We split the data into training (60%) and testing set (40%) by review count. In the next section, 
+we perform an exploratory analysis on the training data. We apply our final prediction model on the testing set.  
+- We use the *stats::anova* function to compute analysis of variance tables for model objects;
+we compare several fitting models and choose our final model with significant predictors. Our final model is: 
+```{r, eval=FALSE}
+lmfit <- lm( review_count ~ checkin_all*stars + checkin_all*text.length + checkin_all*WiFi 
+             + checkin_all*open.Saturday + checkin_all*open.Sunday + checkin_all*HappyHour
+             + checkin_all*business_category + checkin_all*WheelchairAccessible +
+             checkin_all*open + checkin_all*city + checkin_all*longitude, data = training)
+```
+
+For further inquires about the used methods and code, please inspect the Rmd file on the following website:
+*https://github.com/lpalova/Data-Science---Final-Project*.
+
+
+# 4. Results  
+
+### A) Exploratory Analysis  
+
+#### i.) Average Star Ratings
+
+We look at the average review text length for each business as a function of star rating. 
+The table below shows counts of reviews for a given star rating 1-5 (row)
+and review text length interval (column).
+We observe that most reviews show a trend of shorter review texts with better star ratings.
+```{r kable, echo=FALSE, comment=NA }
+text.length <- cut( sumdf$text.length, breaks = quantile( sumdf$text.length, 
+                probs = seq(0,1,0.125)) )
+kable( table( sumdf$round_stars, text.length ) )
+```
+
+There is no apparent relation between the star rating and location of a business in a particular city;
+the shape of the distribution of average stars (left figure) remains unchanged for different locations.
+We note that that there are `r table(sumdf$city)[1]` and `r table(sumdf$city)[2]` businesses
+located in Las Vegas (1) and Phoenix (2), resp., but only between `r min(table(sumdf$city))` to 
+`r max(table(sumdf[sumdf$city != 1 & sumdf$city != 2,]$city))` businesses in other cities.
+Nevertheless, the star distribution shape is the same regardless of the volume of businesses.
+We have performed an analysis of the dependence of star ratings (and review counts)
+on the day when a business is reviewed. We note that there is no apparent dependence,
+and the shape of the distribution(s) remains the same regardless of the day of the week.
+However, we observe dependence of the star ratings (and review counts) 
+on business being open/closed during the weekend; 
+businesses open during the weekend show higher star ratings (green boxplots in the right figure).
+We also observe dependence on business categories;
+medians of the average star ratings change as we go from one category to another. 
+```{r, echo=FALSE}
+starsdata <- training.set[,c(1,2,3,9,13,14,15)]
+starsdata$open.weekend <- (training.set$open.Saturday =="TRUE" | training.set$open.Sunday == "TRUE" )
+starsdata$business.category <- training.set$business_category
+levels(starsdata$business.category) <- c('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15',
+                                         '22', '16', '17', '18', '19', '20', '21')
+```{r, echo=FALSE, message=FALSE, out.width='8.5cm', out.height='15cm', fig.show='hold'}
+ggplot(data=starsdata, aes(starsdata$stars)) + geom_histogram(aes(y=..density..)) + facet_wrap(~city) +
+        labs( x="", y = "Relative Count" ) +
+        theme_bw() + theme(panel.border = element_rect(size=2), text = element_text(size=20)) 
+ggplot(data=starsdata[starsdata$business.category != 22,], aes(business.category, log(stars))) + 
+        geom_boxplot( aes(fill = open.weekend), width =0.8) +
+        labs( x = "Business Categories", y = "Log(Average Star Rating)") + theme_bw() +
+        theme(panel.border = element_rect(size=2), text = element_text(size=20)) + 
+        theme(legend.position="none")
+```
+```{r, echo=FALSE}
+lmfitsimple <- lm( training.set$review_count ~ training.set$checkin_all)
+weekend <- training.set[(training.set$open.Saturday =="TRUE" | training.set$open.Sunday == "TRUE"),]$review_count
+noweekend <- training.set[!(training.set$open.Saturday =="TRUE"  | training.set$open.Sunday =="TRUE"),]$review_count
+testWeekend <- t.test( weekend, noweekend, paired=FALSE, var.equal=FALSE, alternative="greater")
+free <- training.set[training.set$WiFi == "free",]$review_count
+no <- training.set[training.set$WiFi == "no",]$review_count
+paid <- training.set[training.set$WiFi == "paid",]$review_count
+testWiFi <- t.test( no, paid, paired=FALSE, var.equal=FALSE, alternative="greater")
+wheelchairyes <- training.set[training.set$WheelchairAccessible == "TRUE",]$review_count
+wheelchairno <- training.set[training.set$WheelchairAccessible == "FALSE",]$review_count
+testWheelchair <- t.test( wheelchairyes, wheelchairno, paired=FALSE, var.equal=FALSE, alternative="greater")
+happyhouryes <- training.set[training.set$HappyHour == "TRUE",]$review_count
+happyhourno <- training.set[training.set$HappyHour == "FALSE",]$review_count
+testHappyhour <- t.test( happyhouryes, happyhourno, paired=FALSE, var.equal=FALSE, alternative="greater")
+```
+
+#### ii.) Review count     
+We plot the number of reviews as a function of total number of checkins for each business (left, purple circles).
+We observe a correlation of `r round(cor(sumdf$review_count, sumdf$checkin_all  ),2)`
+between the two variables.
+We fit a linear regression model (blue line): 
+$review.count = `r round(lmfitsimple$coeff[1],2)` + `r round(lmfitsimple$coeff[2],2)`\times checkin$.
+R squared is `r round(summary(lmfitsimple)$r.squared,2)`.
+We also show fitted values for our final prediction algorithm as yellow triangles.
+Next, we plot a boxplot of the (log of) number of reviews vs business being open/closed on Saturday or Sunday (right). 
+We observe median of `r median(weekend)` and `r median(noweekend)`, and 
+mean of `r round(mean(weekend),1)` and `r round(mean(noweekend),1)`,
+for the number of reviews for businesses open during the weekend and businesses closed during the weekend, respectively.
+We perform a two-sample t-test on the mean of these two sets and conclude that businesses open
+during the weekend have greater number of reviews.
+```{r, echo=FALSE}
+lmfit <- lm( review_count ~ checkin_all*business_category +  
+                    checkin_all*stars + checkin_all*WiFi + 
+                    checkin_all*WheelchairAccessible + checkin_all*HappyHour + 
+                    checkin_all*open.Saturday + checkin_all*open.Sunday +
+                    checkin_all*city + checkin_all*longitude + checkin_all*text.length +
+                    checkin_all*open, data = training.set[,-16])
+variableImportancelm <- varImp(lmfit)
+predtrainlm <- round(predict(lmfit))
+percerrortrainlm <- ((predtrainlm - training.set$review_count)/training.set$review_count)*100
+trainerrorlm <- predtrainlm - training.set$review_count
+predtestlm <- round(predict(lmfit, newdata = testing.set[,-16]))
+percerrortestlm <- ((predtestlm - testing.set$review_count)/testing.set$review_count)*100
+testerrorlm <- predtestlm - testing.set$review_count
+summarytablelm <- tapply(testerrorlm, testing.set$checkin.group, summary)
+firstqlm <- tapply(testerrorlm, testing.set$checkin.group, function(x) quantile(x=x,p=0.25))
+thirdqlm <- tapply(testerrorlm, testing.set$checkin.group, function(x) quantile(x=x,p=0.75))
+```
+```{r, echo=FALSE, out.width='8cm', out.height='25cm', fig.show='hold'}
+datatlm <- data.frame( x = training.set$checkin_all, y = predtrainlm)
+ggplot(data=training.set, aes(x=training.set$checkin_all, y=training.set$review_count)) + 
+        geom_point(col ="purple", alpha = 0.7, size = 7) + 
+        geom_point(aes(x=datatlm$x, y=datatlm$y), size = 4, shape = 24, alpha = 0.8, fill ="yellow") +
+        theme_bw() +
+        labs( x = "Number of Checkins", y = "Number of Reviews" ) + 
+        geom_smooth(method='lm', formula=y~x, col="blue") +
+        theme(panel.border = element_rect(size=2), text = element_text(size=20))
+ggplot(data=training.set, aes(factor(open.Saturday == "TRUE" | open.Sunday == "TRUE"), log(review_count))) + geom_boxplot( fill = "orange") +
+        labs( x = "Open during the weekend", y = "Log(Number of Reviews)" ) + theme_bw() +
+        theme(panel.border = element_rect(size=2), text = element_text(size=20))
+```
+
+### B) Prediction Algorithm    
+
+#### Review count     
+
+We observe the largest correlation values of:
+`r round(cor(training.set$review_count, training.set$checkin_all)*100)`%,
+`r round(cor(training.set$review_count, as.numeric(training.set$WiFi))*100)`%,
+`r round(cor(training.set$review_count, as.numeric(training.set$WheelchairAccessible))*100)`%,
+`r round(cor(training.set$review_count, as.numeric(training.set$open.Sunday))*100)`%,
+`r round(cor(training.set$review_count, as.numeric(training.set$open.Saturday))*100)`%,
+`r round(cor(training.set$review_count, as.numeric(training.set$city))*100)`%,
+`r round(cor(training.set$review_count, training.set$longitude)*100)`%,
+`r round(cor(training.set$review_count, training.set$latitude)*100)`%,
+`r round(cor(training.set$review_count, as.numeric(training.set$business_category))*100)`%
+between the number of reviews and the number of checkins, WiFi, WheelchairAccessible, open.Sunday, open.Saturday, city, longitude, latitude and business_category in our training set, respectively.
+We use a liner regression model to fit the number of reviews.
+We find that the simple linear model: 
+$review.count = `r round(lmfitsimple$coeff[1],2)` + `r round(lmfitsimple$coeff[2],2)`\times checkin$
+explains about `r round(summary(lmfitsimple)$r.squared*100)`% of the data.
+We observe in figure in section 4Aii that the number of reviews shows larger variation about the linear regression line 
+as the number of checkins increases.
+In order to explain this variance in the data, we need to consider a coupling between the number of checkins
+and yet another feature.
+If this other feature is bounded, such as star rating (values between 1-5) or a factor with discrete levels,
+then a coupling of the form $checkin*stars$ or $checkin*WiFi$ gives a larger interval of possible responses
+as the $checkin$ variable increases. We explore this idea by adding new couplings to the starting simple linear model and 
+using the *anova* function to keep only significant interactions. 
+We note that there are correlations of 
+`r round(cor(training.set$checkin_all, training.set$review_count)*100)`%,
+`r round(cor(training.set$checkin_all, as.numeric(training.set$WiFi))*100)`%,
+`r round(cor(training.set$checkin_all, as.numeric(training.set$WheelchairAccessible))*100)`%,
+`r round(cor(training.set$checkin_all, as.numeric(training.set$open.Saturday))*100)`%,
+`r round(cor(training.set$checkin_all, as.numeric(training.set$open.Sunday))*100)`%,
+`r round(cor(training.set$checkin_all, as.numeric(training.set$city))*100)`%,
+`r round(cor(training.set$checkin_all, training.set$longitude)*100)`%,
+`r round(cor(training.set$checkin_all, training.set$latitude)*100)`%,
+`r round(cor(training.set$checkin_all, as.numeric(training.set$HappyHour))*100)`%
+between the number of checkins and the number of reviews, WiFi, WheelchairAccessible, open.Saturday, open.Sunday, city, longitude, latitude and HappyHour, respectively.
+Our final model includes interactions with WiFi, WheelchairAccessible, open.Saturday, open.Sunday, 
+city, longitude, HappyHour, business_category, open, stars and text.length.
+
+We train our final *lmfit* model on the training set. The model's R squared is
+`r round(cor(training.set$review_count, predtrainlm)^2,2)`.
+We test the model on the testing set;
+we obtain predictions for review counts and plot these predicted values (yellow triangles)
+on top of the actual values (purple circles) in figure below (left).
+We also calculate the error for each prediction
+as a discrepancy between predicted and actual number of reviews.
+The error's 1st quartile, median, mean and 3rd quartile are:
+`r round(quantile(testerrorlm, p=0.25),1)`, `r median(testerrorlm)`,
+`r round(mean(testerrorlm))` and `r round(quantile(testerrorlm, p=0.75),1)`, respectively.
+We show boxplot of the testing error for different checkin groups in the figure below (right),
+where the checkin counts are divided by 0%, 25%, 50%, 75% and 100% quartiles forming 4 groups;
+in addition, we consider the case with zero number of checkins as a separate checkin group.
+We see that the error between the 1st and 3rd quartiles
+falls between `r min(firstqlm)` and `r max(thirdqlm)`;
+the size of this interval slightly increases as number of checkins increases;
+the lower/upper box boundary moves towards smaller (more negative)/larger (more positive) error values.
+This trend corresponds to the trend in figure 4Aii (left) 
+where the number of reviews has a larger variation about the linear regression line 
+as the number of checkins increases.
+The model's test set R squared is `r round(cor(testing.set$review_count, predtestlm)^2,2)`
+and explains about `r round((cor(testing.set$review_count, predtestlm)^2)*100)`% of the data.
+```{r, eval=FALSE}
+predict_test <- round( predict( lmfit, newdata=testing ) )
+error_test <- predict_test - testing$review_count
+summary(error_test)
+```
+```{r, echo=FALSE, comment=NA, out.width='8cm', out.height='25cm', fig.show='hold', warning=FALSE}
+summary(testerrorlm)
+#summary(percerrortestlm)
+datalm <- data.frame( x = testing.set$checkin_all, y = predtestlm)
+dftest <- data.frame( error = testerrorlm, group = testing.set$checkin.group )
+ggplot(data=testing.set, aes(x=testing.set$checkin_all, y=testing.set$review_count)) + 
+        geom_point(col ="purple", alpha = 0.7, size = 7) + 
+        geom_point(aes(x=datalm$x, y=datalm$y), size = 4, shape = 24, alpha = 0.8, fill ="yellow") +
+        theme_bw() +
+        labs( x = "Number of Checkins", y = "Number of Reviews" ) +
+        theme(panel.border = element_rect(size=2), text = element_text(size=20))
+#denstest <- ggplot(data = dftest, aes(error)) + geom_density() + xlim(-70, 120) + 
+#        labs( x = "Testing Error", y = "Density") + theme_bw() +
+#        theme(panel.border = element_rect(size=2), text = element_text(size=20))
+#histtest <- ggplot(data = dftest, aes(error)) + geom_histogram( binwidth = 5, origin = -102.5) + xlim(-100, 100) + 
+#        labs( x = "Testing Error", y = "Frequency") + theme_bw() + 
+#        theme(panel.border = element_rect(size=2), text = element_text(size=20))
+#vp1 <- viewport(width = 0.45, height = 0.5, x = 0.75, y = 0.715)
+#print(denstest) 
+#print(histtest, vp = vp1)
+boxplotfull <- ggplot(data=dftest, aes(group, error)) + geom_boxplot( fill = "orange") +
+        labs( x = "Checkin Group", y = "Testing Error" ) + theme_bw() +
+        theme(panel.border = element_rect(size=2), text = element_text(size=18))
+boxplotzoom <- ggplot(data=subset(dftest, abs(error) < 100), aes(group, error)) + geom_boxplot( fill = "orange") +
+        labs( x = "", y = "" ) + theme_bw() + theme(panel.border = element_rect(size=2), text = element_text(size=13))
+vp2 <- viewport(width = 0.57, height = 0.48, x = 0.46, y = 0.71)
+print(boxplotfull) 
+print(boxplotzoom, vp = vp2)
+```
+
+
+# 5. Discussion     
+
+We find that number of reviews depends, to a great degree, on the number of checkins a business experiences.
+We observe a correlation of `r round(cor(training.set$review_count, training.set$checkin_all  )*100.0)`% 
+between these two features.
+Number of reviews increases with the checkins.   
+(i) We model the dependence by fitting a simple linear regression in section 4Aii (blue line). We find a slope of
+`r round(lmfitsimple$coeff[2],2)`
+representing an increase of $16$ in the number of reviews for every $100$ checkins, on average.    
+(ii) We employ a linear model with couplings between the number of checkins (as the main predictor)
+and other features, including
+WiFi, WheelchairAccessible, open.Saturday, open.Sunday, 
+city, longitude, HappyHour, business_category, open, stars and text.length.
+We observe that this model captures the increasing variance of the number of reviews as a 
+function of the number of checkins;
+we observe a relatively nice match between the dataset values (purple circles) 
+and the fitted or predicted review values (yellow triangles) in figures in sections 4Aii and 4B.
+We train this model on our training dataset (60% of the available data),
+R squared of `r round((cor(training.set$review_count, predtrainlm)^2)*100)`%,
+and apply the model to our testing dataset (remaining 40% of the data).
+The model's performance is measured by 
+R squared of `r round((cor(testing.set$review_count, predtestlm)^2)*100)`%;
+the model explains about `r round((cor(testing.set$review_count, predtestlm)^2)*100)`% of the test data.
+We also look at the error, a discrepancy between the predicted number of reviews 
+and actual number of reviews.
+We find the testing error mean of about `r round(mean(testerrorlm))` and median of `r median(testerrorlm)`;
+we overestimate the number of reviews by `r round(mean(testerrorlm))` (or by `r median(testerrorlm)`)
+on average (or for the most cases).
+The 1st and 3rd quartiles are 
+`r round(quantile(testerrorlm, p=0.25),1)` (we underestimate the count by `r abs(round(quantile(testerrorlm, p=0.25),1))`)
+and `r round(quantile(testerrorlm, p=0.75),1)` (we overestimate the count by `r round(quantile(testerrorlm, p=0.75),1)`), 
+respectively.
+Our prediction error density is centered at `r round(mean(testerrorlm))`
+with a standard deviation of `r round(sd(testerrorlm))`.     
+(iii) We note that we employed several other models including poisson glm, glmboost or gbm models.
+These models do not perform significantly better (some of them perform worse) than our final model.
+
+We perform a p-value test on our training set 
+to address the significance of attributes like business being open/closed during the weekend
+(open.Saturday or open.Sunday), WheelchairAccessible, WiFi or HappyHour.
+We find that businesses open during the weekend (`r length(weekend)` businesses) have greater number of reviews
+than those closed during the weekend (`r length(noweekend)` businesses);
+p-value $\approx$ `r round(testWeekend$p.value,2)`.
+Similarly,
+we find that businesses that are wheelchair accessible (`r length(wheelchairyes)` businesses) have greater 
+number of reviews than those without a wheelchair access (`r length(wheelchairno)` businesses);
+p-value $\approx$ `r round(testWheelchair$p.value,2)`.
+We note, however, that there is a large amount of missing data in this attribute.
+We also look at businesses with WiFi attributes (only non-NA values) and conclude that, interestingly, free, paid or no WiFi 
+has no effect on the number of reviews.
+Again, there is a considerable amount of missing information about WiFi;
+only `r length(free)`, `r length(paid)` and `r length(no)` businesses 
+are recorded to have a free, paid and no WiFi out of `r dim(training.set)[1]` total number of  businesses in our working dataset.
+Finally, businesses offering a HappyHour (`r length(happyhouryes)` businesses)
+do not receive significantly more reviews than businesses not offering this service (`r length(happyhourno)` businesses);
+p-value of `r round(testHappyhour$p.value,2)` is not significant.
+Again, much of the HappyHour information is missing.
+
+In this report, we study business, checkin and review Yelp datasets.
+We look at features including review_count, checkin, stars, business category,
+WiFi, ByAppointmentOnly, HappyHour, WheelchairAccessible, city, latitude, longitude, 
+open, open.Saturday, open.Sunday and review text length.
+We examine dependence of the number of reviews a business receives on the various features;
+we find 
+number of checkins, stars, text.length, WiFi, WheelchairAccessible, open.Saturday/Sunday, 
+HappyHour, business category and city, longitude and open (in coupling with the number of checkins only)
+to be significant predictors.
+Our main findings are: 
+(i) number of reviews increases with number of checkins, 
+(ii) number of reviews has a larger variance as the number of checkins increases, and
+this variance is explained by further couplings between the number of checkins with other features like
+WiFi, HappyHour, business weekend opening hours, star rating and text.length, or location/city,
+(iii) businesses open during the weekend receive more reviews and better star ratings; 
+wheelchair accessible businesses also receive more reviews,
+(iv) business category and average review text length are significant predictors for number of reviews
+and star ratings; we observe that most reviews show shorter texts with higher ratings,
+(v) day of the week a review is written and location/city of the business does not have 
+a significant impact on the number of reviews and star ratings as per se;
+however, these factors enter our model via coupling with other features.
+We note, however, that we have not studied location as a function of proximity to other businesses, and this 
+task is left for further studies.
+
+In summary, a business may get more Yelp reviews by
+providing more checkins, weekend opening hours or wheelchair access.
+Weekend opening hours may contribute also to better star ratings.
+In general, we observe differences in star ratings among different business categories
+(see 4Ai).
+For example, the health and medical category (9) receives higher ratings compared to other catogeries
+like financial services (7), hotels & travel (11), mass media (14), nightlife (15), 
+public services & government (18), restaurants (20) or shopping (21).
+On the other hand, services like active life (1), beauty & spas (4), education (5), local flavor (12), 
+pets (16), professional services (17) and religious organizations (19) receive higher ratings.
